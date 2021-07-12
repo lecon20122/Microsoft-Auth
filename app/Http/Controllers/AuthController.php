@@ -10,7 +10,6 @@ use League\OAuth2\Client\Provider\GenericProvider;
 use Microsoft\Graph\Graph;
 use Microsoft\Graph\Model;
 use App\TokenStore\TokenCache;
-use App\Models\User;
 
 class AuthController extends Controller
 {
@@ -86,13 +85,15 @@ class AuthController extends Controller
                 $tokenCache = new TokenCache();
                 $tokenCache->storeTokens($accessToken, $user);
 
-                // dd($user);
-                //saving UserPrincipalName into Database
-               $newUser = MicrosoftAuth::create([
-                    'name' => $user->getDisplayName(),
-                    'email' => $user->getUserPrincipalName(),
-                ]);
-                $newUser->save();
+                //saving ( UserPrincipalName , userName )  into Database
+                $isUserExists = MicrosoftAuth::where('email', '=', $user->getUserPrincipalName())->first();
+                if ($isUserExists == null) {
+                    $newUser = MicrosoftAuth::create([
+                         'name' => $user->getDisplayName(),
+                         'email' => $user->getUserPrincipalName(),
+                     ]);
+                     $newUser->save();
+                }
                 return redirect('/');
             }
             catch (IdentityProviderException $e) {
