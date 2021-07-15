@@ -4,7 +4,7 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
-class CreateMicrosoftAuthsTable extends Migration
+class CreateAssetsTable extends Migration
 {
     /**
      * Run the migrations.
@@ -13,10 +13,14 @@ class CreateMicrosoftAuthsTable extends Migration
      */
     public function up()
     {
-        Schema::create('microsoft_auths', function (Blueprint $table) {
+        Schema::create('assets', function (Blueprint $table) {
             $table->id();
             $table->string('name');
-            $table->string('email');
+            $table->string('asset_type');
+            $table->longText('resource')->nullable();
+            $table->integer('company_id')->default(1);
+            $table->longText('ancestors')->nullable();
+            $table->string('update_time');
             $table->timestamps();
         });
     }
@@ -28,6 +32,6 @@ class CreateMicrosoftAuthsTable extends Migration
      */
     public function down()
     {
-        Schema::dropIfExists('microsoft_auths');
+        Schema::dropIfExists('assets');
     }
 }

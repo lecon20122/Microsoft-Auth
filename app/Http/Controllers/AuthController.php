@@ -3,17 +3,19 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Controller;
-use App\Models\MicrosoftAuth;
+use App\Models\User;
 use Illuminate\Http\Request;
-use League\OAuth2\Client\Provider\Exception\IdentityProviderException as IdentityProviderException;
-use League\OAuth2\Client\Provider\GenericProvider;
 use Microsoft\Graph\Graph;
 use Microsoft\Graph\Model;
-use App\TokenStore\TokenCache;
+use Carbon\Carbon;
+use Illuminate\Support\Facades\Auth;
+use League\OAuth2\Client\Provider\GenericProvider;
+use League\OAuth2\Client\Provider\Exception\IdentityProviderException;
 
 class AuthController extends Controller
 {
-    public function signin()
+
+    public function MicrosoftRedirect()
     {
         // Initialize the OAuth client
         $oauthClient = new GenericProvider([
@@ -26,34 +28,11 @@ class AuthController extends Controller
             'scopes'                  => config('azure.scopes')
         ]);
 
-        $authUrl = $oauthClient->getAuthorizationUrl();
-
-        // Save client state so we can validate in callback
-        session(['oauthState' => $oauthClient->getState()]);
-
-        // Redirect to AAD signin page
-        return redirect()->away($authUrl);
+        return $oauthClient->authorize();
     }
 
-    public function callback(Request $request)
+    public function MicrosoftCallback(Request $request)
     {
-        // Validate state
-        $expectedState = session('oauthState');
-        $request->session()->forget('oauthState');
-        $providedState = $request->query('state');
-
-        if (!isset($expectedState)) {
-            // If there is no expected state in the session,
-            // do nothing and redirect to the home page.
-            return redirect('/');
-        }
-
-        if (!isset($providedState) || $expectedState != $providedState) {
-            return redirect('/')
-                ->with('error', 'Invalid auth state')
-                ->with('errorDetail', 'The provided auth state did not match the expected value');
-        }
-
         // Authorization code should be in the "code" query param
         $authCode = $request->query('code');
         if (isset($authCode)) {
@@ -67,51 +46,70 @@ class AuthController extends Controller
                 'urlResourceOwnerDetails' => '',
                 'scopes'                  => config('azure.scopes')
             ]);
-
-            try {
                 // Make the token request
                 $accessToken = $oauthClient->getAccessToken('authorization_code', [
                     'code' => $authCode
                 ]);
+                dd($accessToken);
+        }
+    }
 
-                $graph = new Graph();
-                $graph->setAccessToken($accessToken->getToken());
 
-                $user = $graph->createRequest('GET', '/me?$select=displayName,mail,mailboxSettings,userPrincipalName')
+    public function microsoftAuth(Request $request)
+    {
+        try {
+            $graph = new Graph();
+            $graph->setAccessToken($request->accessToken);
+
+            $user = $graph->createRequest('GET', '/me')
                 ->setReturnType(Model\User::class)
-                    ->execute();
+                ->execute();
+            return $this->authenticateUser($user->getProperties());
+        } catch (\Exception $e) {
+            $errorArray[] = [
+                'status' => 401,
+                "title" => "Microsoft user token",
+                "detail" => 'token not valid'
+            ];
+            return Response()->json(['errors' => $errorArray]);
+        }
+    }
 
-                //Saving into Cache
-                $tokenCache = new TokenCache();
-                $tokenCache->storeTokens($accessToken, $user);
+    //userPrincipalName is the Email
+    public function authenticateUser($microsoftUser)
+    {
 
-                //saving ( UserPrincipalName , userName )  into Database
-                $isUserExists = MicrosoftAuth::where('email', '=', $user->getUserPrincipalName())->first();
-                if ($isUserExists == null) {
-                    $newUser = MicrosoftAuth::create([
-                         'name' => $user->getDisplayName(),
-                         'email' => $user->getUserPrincipalName(),
-                     ]);
-                     $newUser->save();
-                }
-                return redirect('/');
-            }
-            catch (IdentityProviderException $e) {
-                return redirect('/')
-                    ->with('error', 'Error requesting access token')
-                    ->with('errorDetail', $e->getMessage());
+        $user = User::where('microsoft_id', $microsoftUser['id'])->first();
+        //if the user didn't have Microsoft ID
+        if (is_null($user)) {
+            if ($microsoftUser['userPrincipalName'] && User::where('email', $microsoftUser['userPrincipalName'])->exists()) {
+                $user = User::where('email', $microsoftUser['userPrincipalName'])->first();
+                $user->microsoft_id = $microsoftUser['id'];
+                $user->save();
+            } else {
+                $user = User::create([
+                    'email' => $microsoftUser['userPrincipalName'],
+                    'password' => bcrypt(rand(1000000, 9000000)),
+                    'name' => $microsoftUser['displayName'],
+                    'email_verified_at' => Carbon::now(),
+                    "microsoft_id" => $microsoftUser['id'],
+                ]);
             }
         }
 
-        return redirect('/')
-            ->with('error', $request->query('error'))
-            ->with('errorDetail', $request->query('error_description'));
+        if ($token = Auth::guard('api')->login($user, $user)) {
+            return $this->respondWithTokenWithCompanyConfig($token, $user);
+        }
+        return response()->json(['error' => 'Unauthorized'], 401);
     }
 
-    public function signout()
+    protected function respondWithTokenWithCompanyConfig($token, $user)
     {
-        $tokenCache = new TokenCache();
-        $tokenCache->clearTokens();
-        return redirect('/');
+        return response()->json([
+            'user' => $user,
+            'access_token' => $token,
+            'token_type' => 'bearer',
+            'expires_in' => auth('api')->factory()->getTTL() * 60,
+        ]);
     }
 }
